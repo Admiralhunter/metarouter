@@ -1,0 +1,21 @@
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+lm_studio:
+  base_url: "http://localhost:1234"
+  timeout: 300
+  refresh_interval: 60  # Refresh model list every 60 seconds
+
+router:
+  model: "microsoft/phi-4"          # Router model (keep loaded in LM Studio)
+  prefer_loaded_bonus: 50           # Score bonus for already-loaded models
+  auto_load_models: true            # Allow loading new models automatically
+
+performance_tracking:
+  enabled: true                     # Learn from real inference metrics
+  sample_size: 10                   # Track last N inferences per model
+
+logging:
+  level: "INFO"
+  log_routing_decisions: true
