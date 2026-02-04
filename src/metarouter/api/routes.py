@@ -50,7 +50,7 @@ async def list_models(request: Request) -> ModelsListResponse:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/v1/chat/completions")
+@router.post("/v1/chat/completions", response_model=None)
 async def chat_completions(
     request: Request,
     completion_request: ChatCompletionRequest,
