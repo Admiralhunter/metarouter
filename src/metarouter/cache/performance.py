@@ -20,7 +20,7 @@ class PerformanceMetrics:
     sample_count: int = 0
 
     def to_string(self) -> str:
-        """Convert to readable string for phi-4 context."""
+        """Convert to readable string for router model context."""
         parts = []
         if self.avg_tokens_per_second:
             parts.append(f"~{self.avg_tokens_per_second:.1f} tokens/sec")

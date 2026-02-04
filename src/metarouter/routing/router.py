@@ -7,7 +7,7 @@ from ..cache.performance import get_performance_cache
 from ..config.settings import Settings
 from ..lmstudio.client import LMStudioClient
 from ..lmstudio.models import CompletionResponse
-from .phi4_selector import Phi4Selector
+from .router_selector import RouterModelSelector
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ class ModelRouter:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.client = LMStudioClient(settings.lm_studio)
-        self.selector = Phi4Selector(
+        self.selector = RouterModelSelector(
             client=self.client,
             router_model=settings.router.model,
             prefer_loaded_bonus=settings.router.prefer_loaded_bonus,
@@ -45,7 +45,7 @@ class ModelRouter:
         # Extract user query for routing decision
         user_query = self._extract_query(messages)
 
-        # Select best model using phi-4
+        # Select best model using the router model
         selection = await self.selector.select_model(user_query)
 
         # Check if model needs to be loaded
