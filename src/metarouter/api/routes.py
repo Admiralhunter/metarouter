@@ -14,6 +14,7 @@ from .schemas import (
     ErrorResponse,
     ModelInfo,
     ModelsListResponse,
+    SessionMetadata,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,10 +76,18 @@ async def chat_completions(
         }
 
         # Route the request
-        selected_model, response = await model_router.route_completion(
+        selection, response = await model_router.route_completion(
             messages=messages,
             stream=completion_request.stream or False,
             **kwargs,
+        )
+
+        # Build session metadata from routing decision
+        session_metadata = SessionMetadata(
+            selected_model=selection.selected_model,
+            reason=selection.reason,
+            confidence=selection.confidence,
+            load_required=selection.load_required,
         )
 
         # Handle streaming response
@@ -93,7 +102,9 @@ async def chat_completions(
                 headers={
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",
-                    "X-Selected-Model": selected_model,
+                    "X-Selected-Model": selection.selected_model,
+                    "X-Selection-Reason": selection.reason,
+                    "X-Selection-Confidence": str(selection.confidence),
                 },
             )
 
@@ -103,7 +114,7 @@ async def chat_completions(
             id=response.id,
             object="chat.completion",
             created=response.created,
-            model=selected_model,  # Use the selected model, not requested model
+            model=selection.selected_model,  # Use the selected model, not requested model
             choices=[
                 {
                     "index": choice.index,
@@ -113,6 +124,7 @@ async def chat_completions(
                 for choice in response.choices
             ],
             usage=response.usage.model_dump() if response.usage else None,
+            session_metadata=session_metadata,
         )
 
     except HTTPException:
