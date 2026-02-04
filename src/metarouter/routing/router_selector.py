@@ -6,7 +6,9 @@ from typing import Optional
 
 from pydantic import BaseModel
 
+from ..cache.benchmarks import BenchmarkFetcher, BenchmarkScores, get_benchmark_fetcher
 from ..cache.performance import get_performance_cache
+from ..config.settings import get_settings
 from ..lmstudio.client import LMStudioClient
 from ..lmstudio.models import ModelInfo
 
@@ -30,6 +32,8 @@ class RouterModelSelector:
         self.router_model = router_model
         self.prefer_loaded_bonus = prefer_loaded_bonus
         self.performance_cache = get_performance_cache()
+        self.benchmark_fetcher = get_benchmark_fetcher()
+        self.settings = get_settings()
 
     def _find_matching_model(
         self, selected: str, models: list[ModelInfo]
@@ -77,7 +81,11 @@ class RouterModelSelector:
 
         return None
 
-    def _build_model_context(self, models: list[ModelInfo]) -> str:
+    async def _build_model_context(
+        self,
+        models: list[ModelInfo],
+        benchmark_scores: dict[str, Optional[BenchmarkScores]],
+    ) -> str:
         """Build concise model list for router model context."""
         lines = ["Available models:"]
 
@@ -85,10 +93,16 @@ class RouterModelSelector:
             # Basic model info
             line_parts = [f"{i}. {model.to_context_string()}"]
 
+            # Add benchmark scores if available and enabled
+            if self.settings.benchmarks.enabled:
+                scores = benchmark_scores.get(model.id)
+                if scores and scores.has_data():
+                    line_parts.append(f"\n   Benchmarks: {scores.to_context_string()}")
+
             # Add performance data if available
             metrics = self.performance_cache.get_metrics(model.id)
             if metrics.sample_count > 0:
-                line_parts.append(f" | {metrics.to_string()}")
+                line_parts.append(f"\n   Performance: {metrics.to_string()}")
 
             lines.append("".join(line_parts))
 
@@ -96,23 +110,38 @@ class RouterModelSelector:
 
     def _build_selection_prompt(self, query: str, model_context: str) -> str:
         """Build the prompt for the router model to select a model."""
+        benchmark_instructions = ""
+        if self.settings.benchmarks.enabled:
+            benchmark_instructions = """
+BENCHMARK SCORES (when available):
+- quality: Overall intelligence/capability score (higher = smarter)
+- coding: Code generation and understanding ability
+- math: Mathematical reasoning ability
+- elo: Human preference rating from Chatbot Arena
+
+Use these scores to make informed decisions about model quality for specific tasks.
+For coding tasks, prefer higher 'coding' scores.
+For math/reasoning, prefer higher 'math' scores.
+"""
+
         return f"""You are a model router for LM Studio. Select the best model for this query.
 
 USER QUERY:
 {query}
 
 {model_context}
-
+{benchmark_instructions}
 ROUTING GUIDELINES:
 1. Match query requirements (code, math, reasoning, chat, vision, general knowledge)
 2. STRONGLY prefer LOADED models (instant response, no load time)
 3. Balance quality vs speed (simple queries don't need large models)
 4. Consider context length if query is long
 5. Only recommend loading a new model if significantly better for the task
-6. For code queries, prefer models with "coder" in the name or tool-use capability
+6. For code queries, prefer models with high 'coding' benchmark or "coder" in the name
 7. For vision queries, only select models with vision capability
 8. For simple conversational queries, prefer small fast models (0.5B-3B)
-9. For complex reasoning/math, prefer larger models (70B+)
+9. For complex reasoning/math, prefer models with high 'math' benchmark or larger models (70B+)
+10. Use benchmark scores as quantitative evidence when available
 
 IMPORTANT: The "selected_model" MUST be the EXACT string inside the ID="..." quotes from the model list above. Do not include any other text like quantization or parameters.
 
@@ -142,8 +171,16 @@ Respond ONLY with valid JSON:
 
         logger.info(f"Selecting model for query (length: {len(query)} chars)")
 
+        # Fetch benchmark scores for all models (uses cache, fetches if needed)
+        benchmark_scores: dict[str, Optional[BenchmarkScores]] = {}
+        if self.settings.benchmarks.enabled:
+            model_ids = [m.id for m in models]
+            benchmark_scores = await self.benchmark_fetcher.get_scores_batch(model_ids)
+            models_with_scores = sum(1 for s in benchmark_scores.values() if s and s.has_data())
+            logger.debug(f"Benchmark data available for {models_with_scores}/{len(models)} models")
+
         # Build context
-        model_context = self._build_model_context(models)
+        model_context = await self._build_model_context(models, benchmark_scores)
         prompt = self._build_selection_prompt(query, model_context)
 
         # Call router model for selection
