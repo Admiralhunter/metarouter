@@ -39,38 +39,37 @@ class ModelInfo(BaseModel):
         return self.state == "loaded" or len(self.loaded_instances) > 0
 
     def to_context_string(self) -> str:
-        """Convert to concise string for router model context."""
-        parts = [self.id]
+        """Convert to concise string for router model context.
+
+        Format: ID="model-id" | metadata
+        The ID is clearly marked to help the router extract the exact model identifier.
+        """
+        # Build metadata parts
+        meta_parts = []
 
         if self.params_string:
-            parts.append(f"[{self.params_string}]")
+            meta_parts.append(self.params_string)
 
         if self.quantization:
-            parts.append(f"({self.quantization})")
+            meta_parts.append(self.quantization)
 
         if self.is_loaded:
-            parts.append("- LOADED")
+            meta_parts.append("LOADED")
         else:
-            parts.append("- available")
+            meta_parts.append("available")
 
         if self.max_context_length:
-            parts.append(f"context:{self.max_context_length//1024}k")
+            meta_parts.append(f"ctx:{self.max_context_length//1024}k")
 
         # Add capabilities
-        caps = []
         if self.capabilities:
             if "vision" in self.capabilities:
-                caps.append("vision")
+                meta_parts.append("vision")
             if "tool_use" in self.capabilities:
-                caps.append("tools")
+                meta_parts.append("tools")
 
-        if self.architecture:
-            caps.append(self.architecture)
-
-        if caps:
-            parts.append(f"({', '.join(caps)})")
-
-        return " ".join(parts)
+        # Format: ID="exact-id" | metadata
+        return f'ID="{self.id}" | {", ".join(meta_parts)}'
 
 
 class ModelsResponse(BaseModel):

@@ -31,6 +31,52 @@ class RouterModelSelector:
         self.prefer_loaded_bonus = prefer_loaded_bonus
         self.performance_cache = get_performance_cache()
 
+    def _find_matching_model(
+        self, selected: str, models: list[ModelInfo]
+    ) -> Optional[ModelInfo]:
+        """
+        Find a model that matches the selected string.
+
+        Handles cases where the router returns variations like:
+        - Exact match: "qwen2.5-0.5b-instruct"
+        - With quantization: "qwen2.5-0.5b-instruct (Q8_0)"
+        - With extra text: "qwen2.5-0.5b-instruct [0.5B]"
+
+        Returns:
+            Matching ModelInfo or None if no match found
+        """
+        model_ids = {m.id: m for m in models}
+
+        # 1. Exact match
+        if selected in model_ids:
+            return model_ids[selected]
+
+        # 2. Normalize and try again (lowercase, strip whitespace)
+        selected_normalized = selected.lower().strip()
+        for model_id, model in model_ids.items():
+            if model_id.lower() == selected_normalized:
+                return model
+
+        # 3. Check if selected starts with or contains a known model ID
+        # Sort by length descending to match longest IDs first
+        for model_id in sorted(model_ids.keys(), key=len, reverse=True):
+            # Selected starts with the model ID
+            if selected_normalized.startswith(model_id.lower()):
+                logger.debug(f"Fuzzy match: '{selected}' -> '{model_id}' (prefix match)")
+                return model_ids[model_id]
+            # Model ID is contained in selected (handles "model (Q8_0)" format)
+            if model_id.lower() in selected_normalized:
+                logger.debug(f"Fuzzy match: '{selected}' -> '{model_id}' (contains match)")
+                return model_ids[model_id]
+
+        # 4. Check if any model ID starts with selected (partial input)
+        for model_id, model in model_ids.items():
+            if model_id.lower().startswith(selected_normalized):
+                logger.debug(f"Fuzzy match: '{selected}' -> '{model_id}' (partial match)")
+                return model
+
+        return None
+
     def _build_model_context(self, models: list[ModelInfo]) -> str:
         """Build concise model list for router model context."""
         lines = ["Available models:"]
@@ -59,7 +105,7 @@ USER QUERY:
 
 ROUTING GUIDELINES:
 1. Match query requirements (code, math, reasoning, chat, vision, general knowledge)
-2. Prefer LOADED models (much faster, no load time) - this is very important
+2. STRONGLY prefer LOADED models (instant response, no load time)
 3. Balance quality vs speed (simple queries don't need large models)
 4. Consider context length if query is long
 5. Only recommend loading a new model if significantly better for the task
@@ -68,11 +114,13 @@ ROUTING GUIDELINES:
 8. For simple conversational queries, prefer small fast models (0.5B-3B)
 9. For complex reasoning/math, prefer larger models (70B+)
 
-Respond ONLY with valid JSON in this exact format:
+IMPORTANT: The "selected_model" MUST be the EXACT string inside the ID="..." quotes from the model list above. Do not include any other text like quantization or parameters.
+
+Respond ONLY with valid JSON:
 {{
-  "selected_model": "exact-model-id-from-list",
+  "selected_model": "exact-value-from-ID-quotes",
   "reason": "Brief explanation",
-  "load_required": true,
+  "load_required": false,
   "confidence": 0.95
 }}"""
 
@@ -116,12 +164,21 @@ Respond ONLY with valid JSON in this exact format:
             selection_data = self._extract_json(content)
             selection = ModelSelection(**selection_data)
 
-            # Validate selected model exists
-            model_ids = [m.id for m in models]
-            if selection.selected_model not in model_ids:
+            # Find matching model (with fuzzy matching)
+            matched_model = self._find_matching_model(selection.selected_model, models)
+
+            if matched_model:
+                # Update to canonical model ID
+                if matched_model.id != selection.selected_model:
+                    logger.debug(
+                        f"Resolved model ID: '{selection.selected_model}' -> '{matched_model.id}'"
+                    )
+                selection.selected_model = matched_model.id
+                selection.load_required = not matched_model.is_loaded
+            else:
                 logger.warning(
                     f"Router model selected unknown model: {selection.selected_model}, "
-                    f"falling back to first available"
+                    f"falling back to loaded model"
                 )
                 # Fallback to first loaded model or first model
                 loaded_models = [m for m in models if m.is_loaded]

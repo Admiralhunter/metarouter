@@ -118,23 +118,22 @@ class LMStudioClient:
 
     async def load_model(self, model_id: str) -> bool:
         """
-        Load a specific model in LM Studio.
+        Request LM Studio to load a model.
 
-        Note: LM Studio doesn't have a direct API to load models programmatically.
-        This would require using the LM Studio CLI or manual loading.
-        For now, we'll log a warning and return False.
+        LM Studio supports Just-In-Time (JIT) model loading - when you send a
+        chat completion request to a model that isn't loaded, LM Studio will
+        automatically load it. This method is informational only.
 
         Args:
             model_id: Model ID to load
 
         Returns:
-            True if loaded successfully, False otherwise
+            True - LM Studio handles loading automatically via JIT
         """
-        logger.warning(
-            f"Model loading not implemented: {model_id}. "
-            "Please load models manually in LM Studio or use CLI."
+        logger.info(
+            f"Model {model_id} will be JIT-loaded by LM Studio when the request is made"
         )
-        return False
+        return True
 
     async def get_loaded_models(self) -> list[ModelInfo]:
         """Get only currently loaded models."""

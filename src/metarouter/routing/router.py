@@ -48,18 +48,14 @@ class ModelRouter:
         # Select best model using the router model
         selection = await self.selector.select_model(user_query)
 
-        # Check if model needs to be loaded
+        # Log if model needs to be loaded (LM Studio handles JIT loading automatically)
         if selection.load_required:
             if self.settings.router.auto_load_models:
-                logger.info(f"Auto-loading model: {selection.selected_model}")
-                loaded = await self.client.load_model(selection.selected_model)
-                if not loaded:
-                    logger.warning(
-                        f"Failed to load {selection.selected_model}, attempting anyway"
-                    )
+                logger.info(f"Model {selection.selected_model} not loaded - LM Studio will JIT load it")
             else:
                 logger.warning(
-                    f"Model {selection.selected_model} not loaded, but auto_load disabled"
+                    f"Model {selection.selected_model} not loaded and auto_load disabled - "
+                    "request may fail if LM Studio JIT loading is disabled"
                 )
 
         # Forward request to selected model
