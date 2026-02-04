@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "LLM-powered intelligent routing for LM Studio - Zero configuration, semantic understanding"
 readme = "README.md"
 license = {text = "MIT"}
-authors = [{name = "Hunter", email = ""}]
+authors = [{name = "Hunter"}]
 keywords = ["llm", "routing", "lm-studio", "local-llm", "proxy", "fastapi"]
 classifiers = [
     "Development Status :: 4 - Beta",
