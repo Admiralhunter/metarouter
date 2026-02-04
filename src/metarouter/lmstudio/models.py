@@ -5,20 +5,6 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
-class Quantization(BaseModel):
-    """Model quantization info."""
-
-    name: str
-    bits_per_weight: float
-
-
-class Capabilities(BaseModel):
-    """Model capabilities."""
-
-    vision: bool = False
-    trained_for_tool_use: bool = False
-
-
 class LoadedInstance(BaseModel):
     """Information about a loaded model instance."""
 
@@ -35,12 +21,14 @@ class ModelInfo(BaseModel):
     publisher: Optional[str] = None
     display_name: Optional[str] = None
     architecture: Optional[str] = None
-    quantization: Optional[Quantization] = None
+    # LM Studio returns quantization as a string (e.g., "Q4_K_M")
+    quantization: Optional[str] = None
     size_bytes: Optional[int] = None
     params_string: Optional[str] = None  # e.g., "7B", "13B"
     max_context_length: Optional[int] = None
     format: Optional[str] = None  # "gguf", "mlx", etc.
-    capabilities: Optional[Capabilities] = None
+    # LM Studio returns capabilities as a list of strings (e.g., ["tool_use"])
+    capabilities: Optional[list[str]] = None
     description: Optional[str] = None
     state: Optional[str] = None  # "loaded" or not present
     loaded_instances: list[LoadedInstance] = Field(default_factory=list)
@@ -58,7 +46,7 @@ class ModelInfo(BaseModel):
             parts.append(f"[{self.params_string}]")
 
         if self.quantization:
-            parts.append(f"({self.quantization.name})")
+            parts.append(f"({self.quantization})")
 
         if self.is_loaded:
             parts.append("- LOADED")
@@ -71,9 +59,9 @@ class ModelInfo(BaseModel):
         # Add capabilities
         caps = []
         if self.capabilities:
-            if self.capabilities.vision:
+            if "vision" in self.capabilities:
                 caps.append("vision")
-            if self.capabilities.trained_for_tool_use:
+            if "tool_use" in self.capabilities:
                 caps.append("tools")
 
         if self.architecture:
