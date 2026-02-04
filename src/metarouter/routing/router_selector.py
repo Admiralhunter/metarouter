@@ -1,4 +1,4 @@
-"""Model selection using phi-4."""
+"""Model selection using the router model."""
 
 import json
 import logging
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class ModelSelection(BaseModel):
-    """Model selection result from phi-4."""
+    """Model selection result from the router model."""
 
     selected_model: str
     reason: str
@@ -22,8 +22,8 @@ class ModelSelection(BaseModel):
     confidence: float
 
 
-class Phi4Selector:
-    """Model selector using phi-4 for intelligent routing."""
+class RouterModelSelector:
+    """Model selector using the router model for intelligent routing."""
 
     def __init__(self, client: LMStudioClient, router_model: str, prefer_loaded_bonus: int):
         self.client = client
@@ -32,7 +32,7 @@ class Phi4Selector:
         self.performance_cache = get_performance_cache()
 
     def _build_model_context(self, models: list[ModelInfo]) -> str:
-        """Build concise model list for phi-4 context."""
+        """Build concise model list for router model context."""
         lines = ["Available models:"]
 
         for i, model in enumerate(models, 1):
@@ -49,7 +49,7 @@ class Phi4Selector:
         return "\n".join(lines)
 
     def _build_selection_prompt(self, query: str, model_context: str) -> str:
-        """Build the prompt for phi-4 to select a model."""
+        """Build the prompt for the router model to select a model."""
         return f"""You are a model router for LM Studio. Select the best model for this query.
 
 USER QUERY:
@@ -78,7 +78,7 @@ Respond ONLY with valid JSON in this exact format:
 
     async def select_model(self, query: str) -> ModelSelection:
         """
-        Select the best model for a query using phi-4.
+        Select the best model for a query using the router model.
 
         Args:
             query: User's query text
@@ -98,7 +98,7 @@ Respond ONLY with valid JSON in this exact format:
         model_context = self._build_model_context(models)
         prompt = self._build_selection_prompt(query, model_context)
 
-        # Call phi-4 for selection
+        # Call router model for selection
         try:
             messages = [{"role": "user", "content": prompt}]
             response = await self.client.chat_completion(
@@ -110,7 +110,7 @@ Respond ONLY with valid JSON in this exact format:
 
             # Extract and parse response
             content = response.choices[0].message.get("content", "")
-            logger.debug(f"phi-4 response: {content}")
+            logger.debug(f"Router model response: {content}")
 
             # Try to extract JSON from response
             selection_data = self._extract_json(content)
@@ -120,7 +120,7 @@ Respond ONLY with valid JSON in this exact format:
             model_ids = [m.id for m in models]
             if selection.selected_model not in model_ids:
                 logger.warning(
-                    f"phi-4 selected unknown model: {selection.selected_model}, "
+                    f"Router model selected unknown model: {selection.selected_model}, "
                     f"falling back to first available"
                 )
                 # Fallback to first loaded model or first model
@@ -165,7 +165,7 @@ Respond ONLY with valid JSON in this exact format:
 
     def _extract_json(self, content: str) -> dict:
         """
-        Extract JSON from phi-4 response.
+        Extract JSON from router model response.
 
         Handles cases where JSON is wrapped in markdown code blocks or has extra text.
         """

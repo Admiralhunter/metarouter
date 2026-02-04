@@ -51,7 +51,7 @@ class ModelInfo(BaseModel):
         return self.state == "loaded" or len(self.loaded_instances) > 0
 
     def to_context_string(self) -> str:
-        """Convert to concise string for phi-4 context."""
+        """Convert to concise string for router model context."""
         parts = [self.id]
 
         if self.params_string:
