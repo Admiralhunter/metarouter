@@ -2,13 +2,13 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-# Install dependencies
+# Copy application code and dependencies
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir -e .
-
-# Copy application code
 COPY src ./src
 COPY config ./config
+
+# Install dependencies
+RUN pip install --no-cache-dir .
 
 # Expose port
 EXPOSE 8000
