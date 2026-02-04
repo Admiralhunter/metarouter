@@ -50,6 +50,15 @@ class ChatCompletionUsage(BaseModel):
     total_tokens: int
 
 
+class SessionMetadata(BaseModel):
+    """Metadata about the routing decision for this session."""
+
+    selected_model: str = Field(description="The model ID selected by the router")
+    reason: str = Field(description="Explanation of why this model was selected")
+    confidence: float = Field(description="Router's confidence in the selection (0-1)")
+    load_required: bool = Field(description="Whether the model needed to be loaded")
+
+
 class ChatCompletionResponse(BaseModel):
     """Response for chat completion."""
 
@@ -60,6 +69,9 @@ class ChatCompletionResponse(BaseModel):
     choices: list[ChatCompletionChoice]
     usage: Optional[ChatCompletionUsage] = None
     system_fingerprint: Optional[str] = None
+    session_metadata: Optional[SessionMetadata] = Field(
+        default=None, description="Metadata about the routing decision"
+    )
 
 
 class ModelInfo(BaseModel):

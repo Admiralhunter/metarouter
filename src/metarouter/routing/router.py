@@ -7,7 +7,7 @@ from ..cache.performance import get_performance_cache
 from ..config.settings import Settings
 from ..lmstudio.client import LMStudioClient
 from ..lmstudio.models import CompletionResponse
-from .router_selector import RouterModelSelector
+from .router_selector import ModelSelection, RouterModelSelector
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class ModelRouter:
         messages: list[dict],
         stream: bool = False,
         **kwargs,
-    ) -> tuple[str, CompletionResponse | AsyncIterator[bytes]]:
+    ) -> tuple[ModelSelection, CompletionResponse | AsyncIterator[bytes]]:
         """
         Route a completion request to the best model.
 
@@ -40,7 +40,7 @@ class ModelRouter:
             **kwargs: Additional completion parameters
 
         Returns:
-            Tuple of (selected_model_id, completion_response)
+            Tuple of (model_selection, completion_response)
         """
         # Extract user query for routing decision
         user_query = self._extract_query(messages)
@@ -72,7 +72,7 @@ class ModelRouter:
             if response.stats and self.settings.performance_tracking.enabled:
                 self.performance_cache.record_inference(selection.selected_model, response.stats)
 
-        return selection.selected_model, response
+        return selection, response
 
     def _extract_query(self, messages: list[dict]) -> str:
         """
