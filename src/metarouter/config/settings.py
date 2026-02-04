@@ -40,6 +40,15 @@ class PerformanceTrackingSettings(BaseSettings):
     sample_size: int = 10
 
 
+class BenchmarkSettings(BaseSettings):
+    """Benchmark data configuration."""
+
+    enabled: bool = True  # Enable benchmark data in routing context
+    cache_ttl_hours: int = 24  # Hours before cache is considered stale
+    auto_fetch_missing: bool = True  # Fetch when encountering unknown models
+    api_timeout: int = 30  # Timeout for API requests
+
+
 class LoggingSettings(BaseSettings):
     """Logging configuration."""
 
@@ -58,6 +67,7 @@ class Settings(BaseSettings):
     performance_tracking: PerformanceTrackingSettings = Field(
         default_factory=PerformanceTrackingSettings
     )
+    benchmarks: BenchmarkSettings = Field(default_factory=BenchmarkSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
 
     @classmethod
@@ -77,6 +87,7 @@ class Settings(BaseSettings):
             performance_tracking=PerformanceTrackingSettings(
                 **config_data.get("performance_tracking", {})
             ),
+            benchmarks=BenchmarkSettings(**config_data.get("benchmarks", {})),
             logging=LoggingSettings(**config_data.get("logging", {})),
         )
 

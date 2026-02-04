@@ -16,6 +16,12 @@ performance_tracking:
   enabled: true                     # Learn from real inference metrics
   sample_size: 10                   # Track last N inferences per model
 
+benchmarks:
+  enabled: true                     # Include benchmark scores in routing context
+  cache_ttl_hours: 24               # Refresh benchmark data every 24 hours
+  auto_fetch_missing: true          # Fetch when encountering unknown models
+  api_timeout: 30                   # Timeout for Artificial Analysis API
+
 logging:
   level: "INFO"
   log_routing_decisions: true
