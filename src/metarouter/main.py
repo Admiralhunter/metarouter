@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 
+import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -34,32 +35,50 @@ async def lifespan(app: FastAPI):
     model_router = ModelRouter(settings)
     app.state.router = model_router
 
-    # Test connection to LM Studio
-    try:
-        models = await model_router.client.get_models()
-        logger.info(f"Connected to LM Studio - {len(models)} models available")
+    # Test connection to LM Studio with retry
+    max_retries = 3
+    retry_delay = 2  # seconds
+    connected = False
 
-        loaded_models = [m for m in models if m.is_loaded]
-        if loaded_models:
-            logger.info(f"Loaded models: {', '.join(m.id for m in loaded_models)}")
-        else:
-            logger.warning("No models currently loaded in LM Studio")
+    for attempt in range(max_retries):
+        try:
+            models = await model_router.client.get_models()
+            logger.info(f"Connected to LM Studio - {len(models)} models available")
 
-        # Check if router model is loaded
-        router_model_loaded = any(
-            m.id == settings.router.model and m.is_loaded for m in models
-        )
-        if router_model_loaded:
-            logger.info(f"Router model {settings.router.model} is loaded ✓")
-        else:
-            logger.warning(
-                f"Router model {settings.router.model} is NOT loaded - "
-                "please load it in LM Studio for routing to work"
+            loaded_models = [m for m in models if m.is_loaded]
+            if loaded_models:
+                logger.info(f"Loaded models: {', '.join(m.id for m in loaded_models)}")
+            else:
+                logger.warning("No models currently loaded in LM Studio")
+
+            # Check if router model is loaded
+            router_model_loaded = any(
+                m.id == settings.router.model and m.is_loaded for m in models
             )
+            if router_model_loaded:
+                logger.info(f"Router model {settings.router.model} is loaded")
+            else:
+                logger.warning(
+                    f"Router model {settings.router.model} is NOT loaded - "
+                    "please load it in LM Studio for routing to work"
+                )
+            connected = True
+            break
 
-    except Exception as e:
-        logger.error(f"Failed to connect to LM Studio: {e}")
-        logger.error("Make sure LM Studio is running on http://localhost:1234")
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning(
+                    f"Failed to connect to LM Studio (attempt {attempt + 1}/{max_retries}): {e}"
+                )
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2  # exponential backoff
+            else:
+                logger.error(f"Failed to connect to LM Studio after {max_retries} attempts: {e}")
+
+    if not connected:
+        logger.error(f"Make sure LM Studio is running on {settings.lm_studio.base_url}")
+        logger.info("MetaRouter will continue running - LM Studio can be connected later")
 
     yield
 
