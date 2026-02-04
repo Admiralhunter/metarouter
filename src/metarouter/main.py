@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import os
+import socket
 import sys
 from contextlib import asynccontextmanager
 
@@ -22,12 +24,39 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def get_local_ip() -> str:
+    """Get the local network IP address."""
+    try:
+        # Connect to an external address to determine the local IP
+        # This doesn't actually send any data
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+
+
+def is_running_in_docker() -> bool:
+    """Check if running inside a Docker container."""
+    return os.path.exists("/.dockerenv")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup and shutdown."""
     # Startup
     settings = get_settings()
     logger.info("Starting MetaRouter")
+
+    # Log server access URLs
+    local_ip = get_local_ip()
+    port = settings.server.port
+    logger.info(f"Local:   http://localhost:{port}/")
+    if is_running_in_docker():
+        logger.info(f"Network: http://<host-ip>:{port}/  (use your host machine's IP)")
+    else:
+        logger.info(f"Network: http://{local_ip}:{port}/")
+
     logger.info(f"LM Studio URL: {settings.lm_studio.base_url}")
     logger.info(f"Router model: {settings.router.model}")
 
