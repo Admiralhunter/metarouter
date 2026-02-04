@@ -18,6 +18,8 @@ class ServerSettings(BaseSettings):
 class LMStudioSettings(BaseSettings):
     """LM Studio API configuration."""
 
+    model_config = SettingsConfigDict(env_prefix="LMSTUDIO_")
+
     base_url: str = "http://localhost:1234"
     timeout: int = 300
     refresh_interval: int = 60
