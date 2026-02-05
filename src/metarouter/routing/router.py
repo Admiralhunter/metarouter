@@ -5,7 +5,7 @@ from typing import AsyncIterator
 
 from ..cache.performance import get_performance_cache
 from ..config.settings import Settings
-from ..lmstudio.client import LMStudioClient
+from ..lmstudio.client import LMStudioClient, MultiInstanceClient
 from ..lmstudio.models import CompletionResponse
 from .router_selector import ModelSelection, RouterModelSelector
 
@@ -17,9 +17,20 @@ class ModelRouter:
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.client = LMStudioClient(settings.lm_studio)
+
+        # Build per-instance clients from config
+        instances = settings.lm_studio.get_instances()
+        clients = [
+            LMStudioClient(inst, instance_name=inst.name)
+            for inst in instances
+        ]
+        self.multi_client = MultiInstanceClient(clients)
+
+        # Backward-compatible: expose .client pointing to the multi-instance client
+        self.client = self.multi_client
+
         self.selector = RouterModelSelector(
-            client=self.client,
+            client=self.multi_client,
             router_model=settings.router.model,
             prefer_loaded_bonus=settings.router.prefer_loaded_bonus,
         )
@@ -58,9 +69,9 @@ class ModelRouter:
                     "request may fail if LM Studio JIT loading is disabled"
                 )
 
-        # Forward request to selected model
+        # Forward request to selected model (multi-client routes to correct instance)
         logger.info(f"Routing request to: {selection.selected_model}")
-        response = await self.client.chat_completion(
+        response = await self.multi_client.chat_completion(
             model=selection.selected_model,
             messages=messages,
             stream=stream,

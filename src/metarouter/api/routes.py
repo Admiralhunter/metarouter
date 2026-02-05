@@ -36,7 +36,7 @@ def get_router_from_request(request: Request) -> ModelRouter:
 
 @router.get("/v1/models", response_model=ModelsListResponse)
 async def list_models(request: Request) -> ModelsListResponse:
-    """List all available models."""
+    """List all available models across all LM Studio instances."""
     try:
         model_router = get_router_from_request(request)
         models = await model_router.client.get_models()
@@ -47,6 +47,7 @@ async def list_models(request: Request) -> ModelsListResponse:
                 object="model",
                 created=0,
                 owned_by=model.publisher or "lm-studio",
+                instance_name=model.instance_name,
             )
             for model in models
         ]
@@ -145,6 +146,24 @@ async def chat_completions(
 async def health_check() -> dict[str, str]:
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+@router.get("/v1/instances")
+async def list_instances(request: Request) -> dict[str, Any]:
+    """Get health and model status of all configured LM Studio instances."""
+    try:
+        model_router = get_router_from_request(request)
+        health = await model_router.multi_client.get_instance_health()
+        return {
+            "instances": health,
+            "total_instances": len(health),
+            "healthy_instances": sum(
+                1 for info in health.values() if info.get("status") == "healthy"
+            ),
+        }
+    except Exception as e:
+        logger.error(f"Error checking instances: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/v1/metrics", response_model=MetricsResponse)
@@ -248,6 +267,7 @@ async def root() -> dict[str, Any]:
             "models": "/v1/models",
             "chat": "/v1/chat/completions",
             "metrics": "/v1/metrics",
+            "instances": "/v1/instances",
             "health": "/health",
         },
     }

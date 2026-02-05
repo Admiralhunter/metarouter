@@ -57,57 +57,83 @@ async def lifespan(app: FastAPI):
     else:
         logger.info(f"Network: http://{local_ip}:{port}/")
 
-    logger.info(f"LM Studio URL: {settings.lm_studio.base_url}")
+    # Log configured LM Studio instances
+    instances = settings.lm_studio.get_instances()
+    if len(instances) == 1:
+        logger.info(f"LM Studio instance: {instances[0].base_url}")
+    else:
+        logger.info(f"LM Studio instances ({len(instances)}):")
+        for inst in instances:
+            logger.info(f"  - {inst.name}: {inst.base_url}")
     logger.info(f"Router model: {settings.router.model}")
 
     # Initialize router
     model_router = ModelRouter(settings)
     app.state.router = model_router
 
-    # Test connection to LM Studio with retry
+    # Test connection to each LM Studio instance with retry
     max_retries = 3
     retry_delay = 2  # seconds
-    connected = False
+    any_connected = False
 
-    for attempt in range(max_retries):
-        try:
-            models = await model_router.client.get_models()
-            logger.info(f"Connected to LM Studio - {len(models)} models available")
+    for client in model_router.multi_client.clients:
+        connected = False
+        delay = retry_delay
 
-            loaded_models = [m for m in models if m.is_loaded]
-            if loaded_models:
-                logger.info(f"Loaded models: {', '.join(m.id for m in loaded_models)}")
-            else:
-                logger.warning("No models currently loaded in LM Studio")
+        for attempt in range(max_retries):
+            try:
+                models = await client.get_models(force_refresh=True)
+                loaded_models = [m for m in models if m.is_loaded]
+                logger.info(
+                    f"Connected to LM Studio instance '{client.instance_name}' "
+                    f"({client.base_url}) - {len(models)} models, "
+                    f"{len(loaded_models)} loaded"
+                )
+                if loaded_models:
+                    logger.info(
+                        f"  Loaded: {', '.join(m.id for m in loaded_models)}"
+                    )
+                connected = True
+                any_connected = True
+                break
 
-            # Check if router model is loaded
-            router_model_loaded = any(
-                m.id == settings.router.model and m.is_loaded for m in models
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Failed to connect to '{client.instance_name}' "
+                        f"({client.base_url}) attempt {attempt + 1}/{max_retries}: {e}"
+                    )
+                    logger.info(f"Retrying in {delay} seconds...")
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                else:
+                    logger.error(
+                        f"Failed to connect to '{client.instance_name}' "
+                        f"({client.base_url}) after {max_retries} attempts: {e}"
+                    )
+
+        if not connected:
+            logger.warning(
+                f"Instance '{client.instance_name}' ({client.base_url}) is unreachable - "
+                "it can be connected later"
             )
-            if router_model_loaded:
-                logger.info(f"Router model {settings.router.model} is loaded")
-            else:
-                logger.warning(
-                    f"Router model {settings.router.model} is NOT loaded - "
-                    "please load it in LM Studio for routing to work"
-                )
-            connected = True
-            break
 
-        except Exception as e:
-            if attempt < max_retries - 1:
-                logger.warning(
-                    f"Failed to connect to LM Studio (attempt {attempt + 1}/{max_retries}): {e}"
-                )
-                logger.info(f"Retrying in {retry_delay} seconds...")
-                await asyncio.sleep(retry_delay)
-                retry_delay *= 2  # exponential backoff
-            else:
-                logger.error(f"Failed to connect to LM Studio after {max_retries} attempts: {e}")
-
-    if not connected:
-        logger.error(f"Make sure LM Studio is running on {settings.lm_studio.base_url}")
-        logger.info("MetaRouter will continue running - LM Studio can be connected later")
+    if any_connected:
+        # Check if router model is available on any instance
+        all_models = await model_router.multi_client.get_models()
+        router_model_loaded = any(
+            m.id == settings.router.model and m.is_loaded for m in all_models
+        )
+        if router_model_loaded:
+            logger.info(f"Router model {settings.router.model} is loaded")
+        else:
+            logger.warning(
+                f"Router model {settings.router.model} is NOT loaded on any instance - "
+                "please load it in LM Studio for routing to work"
+            )
+    else:
+        logger.error("No LM Studio instances are reachable")
+        logger.info("MetaRouter will continue running - instances can be connected later")
 
     yield
 
