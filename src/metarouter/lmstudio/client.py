@@ -1,5 +1,7 @@
 """LM Studio API client."""
 
+import asyncio
+import itertools
 import logging
 from datetime import datetime, timedelta
 from typing import AsyncIterator, Optional
@@ -164,78 +166,105 @@ class MultiInstanceClient:
     """Client that aggregates multiple LM Studio instances.
 
     Presents a unified view of all models across instances and routes
-    requests to the correct instance based on which instance hosts
-    a given model.
+    requests to the correct instance. When the same model is loaded
+    on multiple instances, round-robins requests across them.
+
+    Runs a background health check loop to track which instances are
+    reachable and update the model map automatically.
     """
 
-    def __init__(self, clients: list[LMStudioClient]):
+    def __init__(self, clients: list[LMStudioClient], health_check_interval: int = 30):
         if not clients:
             raise ValueError("At least one LMStudioClient is required")
         self.clients = clients
-        self._instance_map: dict[str, LMStudioClient] = {}
-        # The first client is the default (used for router model)
+        self.health_check_interval = health_check_interval
+
+        # model_id -> list of clients that have it loaded (or available)
+        self._model_clients: dict[str, list[LMStudioClient]] = {}
+        # model_id -> round-robin iterator over clients
+        self._round_robin: dict[str, itertools.cycle] = {}
+        # Track which instances are currently healthy
+        self._healthy: set[str] = {c.instance_name for c in clients}
+        # The first client is the default (used for router model fallback)
         self.default_client = clients[0]
+        # Background task handle
+        self._health_task: Optional[asyncio.Task] = None
 
     @property
     def instance_names(self) -> list[str]:
         """Get names of all configured instances."""
         return [c.instance_name for c in self.clients]
 
-    def _get_client_for_model(self, model_id: str) -> LMStudioClient:
-        """Get the client instance that hosts a given model.
+    # ── routing ──────────────────────────────────────────────────────
 
-        Falls back to the default client if the model hasn't been seen yet.
+    def _get_client_for_model(self, model_id: str) -> LMStudioClient:
+        """Get the next client for a model using round-robin.
+
+        If the model is loaded on multiple instances the call is
+        spread across them.  Falls back to default if model is unknown.
         """
-        client = self._instance_map.get(model_id)
-        if client:
-            return client
+        rr = self._round_robin.get(model_id)
+        if rr:
+            # Try up to len(clients) times to find a healthy one
+            clients_for_model = self._model_clients.get(model_id, [])
+            for _ in range(len(clients_for_model) or 1):
+                client = next(rr)
+                if client.instance_name in self._healthy:
+                    return client
+            # All instances for this model are unhealthy, still return last
+            return client  # type: ignore[possibly-undefined]
+
         logger.debug(
             f"Model '{model_id}' not in instance map, using default instance "
             f"'{self.default_client.instance_name}'"
         )
         return self.default_client
 
+    # ── model aggregation ────────────────────────────────────────────
+
     async def get_models(self, force_refresh: bool = False) -> list[ModelInfo]:
-        """Get all models from all instances, deduplicated.
+        """Get all models from all instances, merged.
 
-        If the same model ID exists on multiple instances, the loaded version
-        is preferred. If both are loaded (or both unloaded), the first instance wins.
+        If the same model ID exists on multiple instances, a single entry
+        is returned (preferring loaded). The internal routing map tracks
+        all instances per model for load balancing.
         """
-        import asyncio
-
-        async def _fetch_from(client: LMStudioClient) -> list[ModelInfo]:
+        async def _fetch_from(client: LMStudioClient) -> tuple[LMStudioClient, list[ModelInfo]]:
             try:
-                return await client.get_models(force_refresh=force_refresh)
+                models = await client.get_models(force_refresh=force_refresh)
+                return client, models
             except Exception as e:
                 logger.error(
                     f"Failed to fetch models from instance '{client.instance_name}' "
                     f"({client.base_url}): {e}"
                 )
-                return []
+                return client, []
 
         results = await asyncio.gather(*[_fetch_from(c) for c in self.clients])
 
-        # Merge models: prefer loaded versions, track instance mapping
-        seen: dict[str, ModelInfo] = {}
-        for models in results:
+        # Build per-model client lists and pick a representative ModelInfo
+        new_model_clients: dict[str, list[LMStudioClient]] = {}
+        representative: dict[str, ModelInfo] = {}
+
+        for client, models in results:
             for model in models:
-                existing = seen.get(model.id)
+                # Track this client for this model
+                new_model_clients.setdefault(model.id, []).append(client)
+
+                existing = representative.get(model.id)
                 if existing is None:
-                    seen[model.id] = model
+                    representative[model.id] = model
                 elif model.is_loaded and not existing.is_loaded:
-                    # Prefer the loaded version
-                    seen[model.id] = model
+                    representative[model.id] = model
 
-        # Update instance map for routing
-        self._instance_map.clear()
-        for model in seen.values():
-            if model.instance_name:
-                for client in self.clients:
-                    if client.instance_name == model.instance_name:
-                        self._instance_map[model.id] = client
-                        break
+        # Rebuild routing map and round-robin iterators
+        self._model_clients = new_model_clients
+        self._round_robin = {
+            model_id: itertools.cycle(clients)
+            for model_id, clients in new_model_clients.items()
+        }
 
-        all_models = list(seen.values())
+        all_models = list(representative.values())
         logger.debug(
             f"Aggregated {len(all_models)} unique models from "
             f"{len(self.clients)} instances"
@@ -247,6 +276,8 @@ class MultiInstanceClient:
         all_models = await self.get_models()
         return [m for m in all_models if m.is_loaded]
 
+    # ── completions ──────────────────────────────────────────────────
+
     async def chat_completion(
         self,
         model: str,
@@ -256,7 +287,7 @@ class MultiInstanceClient:
     ) -> CompletionResponse | AsyncIterator[bytes]:
         """Route chat completion to the correct instance for the model."""
         client = self._get_client_for_model(model)
-        logger.debug(
+        logger.info(
             f"Routing completion for '{model}' to instance "
             f"'{client.instance_name}' ({client.base_url})"
         )
@@ -269,20 +300,58 @@ class MultiInstanceClient:
         client = self._get_client_for_model(model_id)
         return await client.load_model(model_id)
 
-    def clear_cache(self) -> None:
-        """Clear caches on all instances."""
-        for client in self.clients:
-            client.clear_cache()
-        self._instance_map.clear()
-        logger.debug("Cleared caches for all instances")
+    # ── health monitoring ────────────────────────────────────────────
+
+    def start_health_loop(self) -> None:
+        """Start the background health-check loop.
+
+        Should be called once during application startup.
+        """
+        if self._health_task is None or self._health_task.done():
+            self._health_task = asyncio.create_task(self._health_loop())
+            logger.info(
+                f"Started instance health monitor (interval={self.health_check_interval}s)"
+            )
+
+    def stop_health_loop(self) -> None:
+        """Cancel the background health-check loop."""
+        if self._health_task and not self._health_task.done():
+            self._health_task.cancel()
+            logger.info("Stopped instance health monitor")
+
+    async def _health_loop(self) -> None:
+        """Periodically refresh models from every instance.
+
+        This serves double duty:
+        - Updates _healthy set so routing avoids dead instances
+        - Refreshes the model list so new/removed models are detected
+        """
+        while True:
+            await asyncio.sleep(self.health_check_interval)
+            try:
+                health = await self.get_instance_health()
+                newly_healthy = {
+                    name for name, info in health.items()
+                    if info.get("status") == "healthy"
+                }
+                came_back = newly_healthy - self._healthy
+                went_down = self._healthy - newly_healthy
+                if came_back:
+                    logger.info(f"Instance(s) recovered: {', '.join(came_back)}")
+                if went_down:
+                    logger.warning(f"Instance(s) unreachable: {', '.join(went_down)}")
+                self._healthy = newly_healthy
+
+                # Refresh models to pick up any changes
+                await self.get_models(force_refresh=True)
+            except Exception as e:
+                logger.error(f"Health check loop error: {e}")
 
     async def get_instance_health(self) -> dict[str, dict]:
         """Check connectivity to each instance.
 
         Returns a dict keyed by instance name with health status.
         """
-        import asyncio
-
         async def _check(client: LMStudioClient) -> tuple[str, dict]:
             try:
                 models = await client.get_models(force_refresh=True)
@@ -292,6 +361,7 @@ class MultiInstanceClient:
                     "base_url": client.base_url,
                     "total_models": len(models),
                     "loaded_models": len(loaded),
+                    "loaded_model_ids": [m.id for m in loaded],
                 }
             except Exception as e:
                 return client.instance_name, {
@@ -302,3 +372,13 @@ class MultiInstanceClient:
 
         results = await asyncio.gather(*[_check(c) for c in self.clients])
         return dict(results)
+
+    # ── cache management ─────────────────────────────────────────────
+
+    def clear_cache(self) -> None:
+        """Clear caches on all instances."""
+        for client in self.clients:
+            client.clear_cache()
+        self._model_clients.clear()
+        self._round_robin.clear()
+        logger.debug("Cleared caches for all instances")

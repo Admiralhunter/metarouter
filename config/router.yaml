@@ -6,7 +6,8 @@ lm_studio:
   # Single instance (backward compatible):
   base_url: "http://localhost:1234"
   timeout: 300
-  refresh_interval: 60  # Refresh model list every 60 seconds
+  refresh_interval: 60  # Per-instance model list cache TTL (seconds)
+  health_check_interval: 30  # Background health check frequency (seconds)
 
   # Multi-instance: uncomment and configure to use multiple LM Studio machines.
   # When 'instances' is set, the single base_url above is ignored.

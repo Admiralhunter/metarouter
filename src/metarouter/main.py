@@ -135,9 +135,14 @@ async def lifespan(app: FastAPI):
         logger.error("No LM Studio instances are reachable")
         logger.info("MetaRouter will continue running - instances can be connected later")
 
+    # Start background health monitor (detects instance recovery/failure,
+    # refreshes model lists, enables round-robin across instances)
+    model_router.multi_client.start_health_loop()
+
     yield
 
     # Shutdown
+    model_router.multi_client.stop_health_loop()
     logger.info("Shutting down MetaRouter")
 
 

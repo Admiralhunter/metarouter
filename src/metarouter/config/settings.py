@@ -38,6 +38,7 @@ class LMStudioSettings(BaseSettings):
     timeout: int = 300
     refresh_interval: int = 60
     instances: list[LMStudioInstanceConfig] = Field(default_factory=list)
+    health_check_interval: int = 30  # seconds between background health checks
 
     def get_instances(self) -> list[LMStudioInstanceConfig]:
         """Get resolved list of instances.

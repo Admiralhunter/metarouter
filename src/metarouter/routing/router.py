@@ -24,7 +24,10 @@ class ModelRouter:
             LMStudioClient(inst, instance_name=inst.name)
             for inst in instances
         ]
-        self.multi_client = MultiInstanceClient(clients)
+        self.multi_client = MultiInstanceClient(
+            clients,
+            health_check_interval=settings.lm_studio.health_check_interval,
+        )
 
         # Backward-compatible: expose .client pointing to the multi-instance client
         self.client = self.multi_client
