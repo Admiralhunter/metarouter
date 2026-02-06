@@ -1,8 +1,9 @@
 """LM Studio API client."""
 
 import asyncio
-import itertools
 import logging
+import re
+from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import AsyncIterator, Optional
 
@@ -12,6 +13,26 @@ from ..config.settings import LMStudioInstanceConfig, LMStudioSettings
 from .models import CompletionResponse, ModelInfo, ModelsResponse
 
 logger = logging.getLogger(__name__)
+
+# Default weight when params_string is missing or unparseable
+_DEFAULT_MODEL_WEIGHT = 7.0
+
+
+def _parse_model_weight(params_string: Optional[str]) -> float:
+    """Extract a numeric weight from a params_string like '7B', '14B', '70B'.
+
+    Returns a float representing billions of parameters.
+    """
+    if not params_string:
+        return _DEFAULT_MODEL_WEIGHT
+    match = re.search(r"([\d.]+)\s*[BbMm]", params_string)
+    if not match:
+        return _DEFAULT_MODEL_WEIGHT
+    value = float(match.group(1))
+    # If it says "M" (millions), convert to billions
+    if params_string.upper().endswith("M"):
+        value /= 1000
+    return value
 
 
 class LMStudioClient:
@@ -166,8 +187,10 @@ class MultiInstanceClient:
     """Client that aggregates multiple LM Studio instances.
 
     Presents a unified view of all models across instances and routes
-    requests to the correct instance. When the same model is loaded
-    on multiple instances, round-robins requests across them.
+    requests to the correct instance.  Uses weighted least-connections
+    to prefer instances with the lowest current load, where each
+    in-flight request is weighted by the model's parameter count
+    (a 70B completion counts ~10x more than a 7B one).
 
     Runs a background health check loop to track which instances are
     reachable and update the model map automatically.
@@ -179,10 +202,12 @@ class MultiInstanceClient:
         self.clients = clients
         self.health_check_interval = health_check_interval
 
-        # model_id -> list of clients that have it loaded (or available)
+        # model_id -> list of clients that have it (loaded or available)
         self._model_clients: dict[str, list[LMStudioClient]] = {}
-        # model_id -> round-robin iterator over clients
-        self._round_robin: dict[str, itertools.cycle] = {}
+        # model_id -> ModelInfo (representative, for weight lookup)
+        self._model_info: dict[str, ModelInfo] = {}
+        # instance_name -> current weighted load (sum of in-flight weights)
+        self._instance_load: dict[str, float] = defaultdict(float)
         # Track which instances are currently healthy
         self._healthy: set[str] = {c.instance_name for c in clients}
         # The first client is the default (used for router model fallback)
@@ -195,30 +220,56 @@ class MultiInstanceClient:
         """Get names of all configured instances."""
         return [c.instance_name for c in self.clients]
 
+    # ── load tracking ────────────────────────────────────────────────
+
+    def _model_weight(self, model_id: str) -> float:
+        """Get the weight for a model based on its parameter count."""
+        info = self._model_info.get(model_id)
+        if info:
+            return _parse_model_weight(info.params_string)
+        return _DEFAULT_MODEL_WEIGHT
+
+    def _add_load(self, instance_name: str, weight: float) -> None:
+        self._instance_load[instance_name] += weight
+
+    def _remove_load(self, instance_name: str, weight: float) -> None:
+        self._instance_load[instance_name] = max(
+            0.0, self._instance_load[instance_name] - weight
+        )
+
+    def get_instance_loads(self) -> dict[str, float]:
+        """Get current weighted load per instance (for diagnostics)."""
+        return dict(self._instance_load)
+
     # ── routing ──────────────────────────────────────────────────────
 
     def _get_client_for_model(self, model_id: str) -> LMStudioClient:
-        """Get the next client for a model using round-robin.
+        """Pick the least-loaded healthy instance that has this model.
 
-        If the model is loaded on multiple instances the call is
-        spread across them.  Falls back to default if model is unknown.
+        Falls back to the default client if the model is unknown.
         """
-        rr = self._round_robin.get(model_id)
-        if rr:
-            # Try up to len(clients) times to find a healthy one
-            clients_for_model = self._model_clients.get(model_id, [])
-            for _ in range(len(clients_for_model) or 1):
-                client = next(rr)
-                if client.instance_name in self._healthy:
-                    return client
-            # All instances for this model are unhealthy, still return last
-            return client  # type: ignore[possibly-undefined]
+        candidates = self._model_clients.get(model_id)
+        if not candidates:
+            logger.debug(
+                f"Model '{model_id}' not in instance map, using default instance "
+                f"'{self.default_client.instance_name}'"
+            )
+            return self.default_client
 
-        logger.debug(
-            f"Model '{model_id}' not in instance map, using default instance "
-            f"'{self.default_client.instance_name}'"
+        # Filter to healthy instances
+        healthy_candidates = [
+            c for c in candidates if c.instance_name in self._healthy
+        ]
+        if not healthy_candidates:
+            # All unhealthy — try them all anyway
+            healthy_candidates = candidates
+
+        # Pick the one with lowest weighted load
+        best = min(
+            healthy_candidates,
+            key=lambda c: self._instance_load.get(c.instance_name, 0.0),
         )
-        return self.default_client
+        return best
 
     # ── model aggregation ────────────────────────────────────────────
 
@@ -248,7 +299,6 @@ class MultiInstanceClient:
 
         for client, models in results:
             for model in models:
-                # Track this client for this model
                 new_model_clients.setdefault(model.id, []).append(client)
 
                 existing = representative.get(model.id)
@@ -257,12 +307,8 @@ class MultiInstanceClient:
                 elif model.is_loaded and not existing.is_loaded:
                     representative[model.id] = model
 
-        # Rebuild routing map and round-robin iterators
         self._model_clients = new_model_clients
-        self._round_robin = {
-            model_id: itertools.cycle(clients)
-            for model_id, clients in new_model_clients.items()
-        }
+        self._model_info = representative
 
         all_models = list(representative.values())
         logger.debug(
@@ -285,15 +331,46 @@ class MultiInstanceClient:
         stream: bool = False,
         **kwargs,
     ) -> CompletionResponse | AsyncIterator[bytes]:
-        """Route chat completion to the correct instance for the model."""
+        """Route chat completion to the least-loaded instance for the model."""
         client = self._get_client_for_model(model)
+        weight = self._model_weight(model)
+        instance = client.instance_name
+
         logger.info(
-            f"Routing completion for '{model}' to instance "
-            f"'{client.instance_name}' ({client.base_url})"
+            f"Routing '{model}' (weight={weight:.0f}) to instance "
+            f"'{instance}' ({client.base_url}) "
+            f"[load before: {self._instance_load.get(instance, 0):.0f}]"
         )
-        return await client.chat_completion(
-            model=model, messages=messages, stream=stream, **kwargs
-        )
+
+        self._add_load(instance, weight)
+
+        if stream:
+            # Wrap the stream so load is released when iteration ends
+            raw_stream = await client.chat_completion(
+                model=model, messages=messages, stream=True, **kwargs
+            )
+            return self._tracked_stream(raw_stream, instance, weight)
+        else:
+            try:
+                response = await client.chat_completion(
+                    model=model, messages=messages, stream=False, **kwargs
+                )
+                return response
+            finally:
+                self._remove_load(instance, weight)
+
+    async def _tracked_stream(
+        self,
+        raw: AsyncIterator[bytes],
+        instance_name: str,
+        weight: float,
+    ) -> AsyncIterator[bytes]:
+        """Wrap an async byte stream to release load when done."""
+        try:
+            async for chunk in raw:
+                yield chunk
+        finally:
+            self._remove_load(instance_name, weight)
 
     async def load_model(self, model_id: str) -> bool:
         """Request the appropriate instance to load a model."""
@@ -350,7 +427,7 @@ class MultiInstanceClient:
     async def get_instance_health(self) -> dict[str, dict]:
         """Check connectivity to each instance.
 
-        Returns a dict keyed by instance name with health status.
+        Returns a dict keyed by instance name with health status and load.
         """
         async def _check(client: LMStudioClient) -> tuple[str, dict]:
             try:
@@ -362,12 +439,14 @@ class MultiInstanceClient:
                     "total_models": len(models),
                     "loaded_models": len(loaded),
                     "loaded_model_ids": [m.id for m in loaded],
+                    "current_load": self._instance_load.get(client.instance_name, 0.0),
                 }
             except Exception as e:
                 return client.instance_name, {
                     "status": "unreachable",
                     "base_url": client.base_url,
                     "error": str(e),
+                    "current_load": self._instance_load.get(client.instance_name, 0.0),
                 }
 
         results = await asyncio.gather(*[_check(c) for c in self.clients])
@@ -380,5 +459,5 @@ class MultiInstanceClient:
         for client in self.clients:
             client.clear_cache()
         self._model_clients.clear()
-        self._round_robin.clear()
+        self._model_info.clear()
         logger.debug("Cleared caches for all instances")
