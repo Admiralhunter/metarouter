@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,14 +15,47 @@ class ServerSettings(BaseSettings):
     port: int = 8000
 
 
+class LMStudioInstanceConfig(BaseModel):
+    """Configuration for a single LM Studio instance."""
+
+    name: str = "default"
+    base_url: str = "http://localhost:1234"
+    timeout: int = 300
+    refresh_interval: int = 60
+
+
 class LMStudioSettings(BaseSettings):
-    """LM Studio API configuration."""
+    """LM Studio API configuration.
+
+    Supports both single-instance (backward compatible) and multi-instance configs.
+    Single instance: set base_url directly.
+    Multi-instance: provide a list of instances.
+    """
 
     model_config = SettingsConfigDict(env_prefix="LMSTUDIO_")
 
     base_url: str = "http://localhost:1234"
     timeout: int = 300
     refresh_interval: int = 60
+    instances: list[LMStudioInstanceConfig] = Field(default_factory=list)
+    health_check_interval: int = 30  # seconds between background health checks
+
+    def get_instances(self) -> list[LMStudioInstanceConfig]:
+        """Get resolved list of instances.
+
+        If explicit instances are configured, return those.
+        Otherwise, create a single instance from the base_url/timeout/refresh_interval.
+        """
+        if self.instances:
+            return self.instances
+        return [
+            LMStudioInstanceConfig(
+                name="default",
+                base_url=self.base_url,
+                timeout=self.timeout,
+                refresh_interval=self.refresh_interval,
+            )
+        ]
 
 
 class RouterSettings(BaseSettings):
@@ -80,9 +113,18 @@ class Settings(BaseSettings):
         with open(config_path) as f:
             config_data = yaml.safe_load(f)
 
+        # Parse LM Studio settings, handling instances list
+        lm_studio_data = config_data.get("lm_studio", {})
+        if "instances" in lm_studio_data:
+            lm_studio_data["instances"] = [
+                LMStudioInstanceConfig(**inst)
+                for inst in lm_studio_data["instances"]
+            ]
+        lm_studio_settings = LMStudioSettings(**lm_studio_data)
+
         return cls(
             server=ServerSettings(**config_data.get("server", {})),
-            lm_studio=LMStudioSettings(**config_data.get("lm_studio", {})),
+            lm_studio=lm_studio_settings,
             router=RouterSettings(**config_data.get("router", {})),
             performance_tracking=PerformanceTrackingSettings(
                 **config_data.get("performance_tracking", {})
