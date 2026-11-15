@@ -57,6 +57,16 @@ jobs:
         run: |
           docker build -t metarouter:test .
 
-      - name: Verify package import and health endpoint in the image
+      - name: Verify completions and streaming through the router
         run: |
-          docker run --rm --network none metarouter:test python -c "from fastapi.testclient import TestClient; from metarouter.main import app; response = TestClient(app).get('/health'); assert response.status_code == 200 and response.json() == {'status': 'healthy'}, response.text"
+          set -o pipefail
+          docker run --rm --network none \
+            --mount "type=bind,source=$GITHUB_WORKSPACE/tests,target=/verification,readonly" \
+            metarouter:test python /verification/verify_routing.py 2>&1 | tee routing-verification.log
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: routing-verification
+          path: routing-verification.log
+          if-no-files-found: warn
