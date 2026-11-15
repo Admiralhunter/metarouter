@@ -2,22 +2,25 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [master, main, develop]
   pull_request:
-    branches: [main]
+    branches: [master, main]
 
 jobs:
   test:
+    # Keep the legacy main/develop checks. They reference a tests/ suite that
+    # is absent on master, where the Docker build and API smoke gate run.
+    if: github.ref_name != 'master' && github.base_ref != 'master'
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ["3.12", "3.13"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -48,12 +51,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build Docker image
         run: |
           docker build -t metarouter:test .
 
-      - name: Test Docker image
+      - name: Verify package import and health endpoint in the image
         run: |
-          docker run --rm metarouter:test python -c "import metarouter; print('Import successful')"
+          docker run --rm --network none metarouter:test python -c "from fastapi.testclient import TestClient; from metarouter.main import app; response = TestClient(app).get('/health'); assert response.status_code == 200 and response.json() == {'status': 'healthy'}, response.text"
