@@ -4,8 +4,10 @@ import logging
 import time
 from typing import Any
 
+from anyio import CancelScope
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from starlette.types import Send
 
 from ..cache.benchmarks import get_benchmark_fetcher
 from ..cache.performance import get_performance_cache
@@ -27,6 +29,15 @@ from .schemas import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class CompletionStream(StreamingResponse):
+    async def stream_response(self, send: Send) -> None:
+        try:
+            await super().stream_response(send)
+        finally:
+            with CancelScope(shield=True):
+                await self.body_iterator.aclose()
 
 
 def get_router_from_request(request: Request) -> ModelRouter:
@@ -100,12 +111,8 @@ async def chat_completions(
 
         # Handle streaming response
         if completion_request.stream:
-            async def stream_generator():
-                async for chunk in response:
-                    yield chunk
-
-            return StreamingResponse(
-                stream_generator(),
+            return CompletionStream(
+                response,
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -153,7 +160,7 @@ async def list_instances(request: Request) -> dict[str, Any]:
     """Get health and model status of all configured LM Studio instances."""
     try:
         model_router = get_router_from_request(request)
-        health = await model_router.multi_client.get_instance_health()
+        health = await model_router.client.get_instance_health()
         return {
             "instances": health,
             "total_instances": len(health),

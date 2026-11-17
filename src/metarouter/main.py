@@ -1,6 +1,5 @@
 """FastAPI application entry point."""
 
-import asyncio
 import logging
 import os
 import socket
@@ -71,79 +70,18 @@ async def lifespan(app: FastAPI):
     model_router = ModelRouter(settings)
     app.state.router = model_router
 
-    # Test connection to each LM Studio instance with retry
-    max_retries = 3
-    retry_delay = 2  # seconds
-    any_connected = False
+    models = await model_router.client.get_models(force_refresh=True)
+    if not models:
+        logger.warning("No LM Studio models discovered; discovery will retry")
+    elif not any(model.id == settings.router.model and model.is_loaded for model in models):
+        logger.warning("Router model %s is not loaded on any instance", settings.router.model)
 
-    for client in model_router.multi_client.clients:
-        connected = False
-        delay = retry_delay
-
-        for attempt in range(max_retries):
-            try:
-                models = await client.get_models(force_refresh=True)
-                loaded_models = [m for m in models if m.is_loaded]
-                logger.info(
-                    f"Connected to LM Studio instance '{client.instance_name}' "
-                    f"({client.base_url}) - {len(models)} models, "
-                    f"{len(loaded_models)} loaded"
-                )
-                if loaded_models:
-                    logger.info(
-                        f"  Loaded: {', '.join(m.id for m in loaded_models)}"
-                    )
-                connected = True
-                any_connected = True
-                break
-
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    logger.warning(
-                        f"Failed to connect to '{client.instance_name}' "
-                        f"({client.base_url}) attempt {attempt + 1}/{max_retries}: {e}"
-                    )
-                    logger.info(f"Retrying in {delay} seconds...")
-                    await asyncio.sleep(delay)
-                    delay *= 2
-                else:
-                    logger.error(
-                        f"Failed to connect to '{client.instance_name}' "
-                        f"({client.base_url}) after {max_retries} attempts: {e}"
-                    )
-
-        if not connected:
-            logger.warning(
-                f"Instance '{client.instance_name}' ({client.base_url}) is unreachable - "
-                "it can be connected later"
-            )
-
-    if any_connected:
-        # Check if router model is available on any instance
-        all_models = await model_router.multi_client.get_models()
-        router_model_loaded = any(
-            m.id == settings.router.model and m.is_loaded for m in all_models
-        )
-        if router_model_loaded:
-            logger.info(f"Router model {settings.router.model} is loaded")
-        else:
-            logger.warning(
-                f"Router model {settings.router.model} is NOT loaded on any instance - "
-                "please load it in LM Studio for routing to work"
-            )
-    else:
-        logger.error("No LM Studio instances are reachable")
-        logger.info("MetaRouter will continue running - instances can be connected later")
-
-    # Start background health monitor (detects instance recovery/failure,
-    # refreshes model lists, enables round-robin across instances)
-    model_router.multi_client.start_health_loop()
-
-    yield
-
-    # Shutdown
-    model_router.multi_client.stop_health_loop()
-    logger.info("Shutting down MetaRouter")
+    model_router.client.start_health_loop()
+    try:
+        yield
+    finally:
+        await model_router.client.stop_health_loop()
+        logger.info("Shutting down MetaRouter")
 
 
 # Create FastAPI app

@@ -1,7 +1,7 @@
 """Main routing logic coordinator."""
 
 import logging
-from typing import AsyncIterator
+from collections.abc import AsyncGenerator
 
 from ..cache.performance import get_performance_cache
 from ..config.settings import Settings
@@ -24,16 +24,13 @@ class ModelRouter:
             LMStudioClient(inst, instance_name=inst.name)
             for inst in instances
         ]
-        self.multi_client = MultiInstanceClient(
+        self.client = MultiInstanceClient(
             clients,
             health_check_interval=settings.lm_studio.health_check_interval,
         )
 
-        # Backward-compatible: expose .client pointing to the multi-instance client
-        self.client = self.multi_client
-
         self.selector = RouterModelSelector(
-            client=self.multi_client,
+            client=self.client,
             router_model=settings.router.model,
             prefer_loaded_bonus=settings.router.prefer_loaded_bonus,
         )
@@ -44,7 +41,7 @@ class ModelRouter:
         messages: list[dict],
         stream: bool = False,
         **kwargs,
-    ) -> tuple[ModelSelection, CompletionResponse | AsyncIterator[bytes]]:
+    ) -> tuple[ModelSelection, CompletionResponse | AsyncGenerator[bytes, None]]:
         """
         Route a completion request to the best model.
 
@@ -74,7 +71,7 @@ class ModelRouter:
 
         # Forward request to selected model (multi-client routes to correct instance)
         logger.info(f"Routing request to: {selection.selected_model}")
-        response = await self.multi_client.chat_completion(
+        response = await self.client.chat_completion(
             model=selection.selected_model,
             messages=messages,
             stream=stream,

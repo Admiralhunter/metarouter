@@ -144,6 +144,24 @@ performance_tracking:
   sample_size: 10              # Track last N inferences per model
 ```
 
+For multiple LM Studio servers, set `lm_studio.instances` in the same file.
+Use a unique name and a URL reachable from MetaRouter for each server.
+
+```yaml
+lm_studio:
+  health_check_interval: 30
+  instances:
+    - name: desktop
+      base_url: "http://host.docker.internal:1234"
+    - name: workstation
+      base_url: "http://192.168.1.100:1234"
+```
+
+For a single server, `LMSTUDIO_BASE_URL` overrides the YAML `base_url`.
+When `instances` is set, MetaRouter uses those URLs. It prefers a loaded
+replica of the chosen model, then uses in-flight load to pick among replicas.
+`GET /v1/instances` probes each backend and reports its current status.
+
 ## Usage
 
 Point any OpenAI-compatible client to `http://localhost:8000` instead of `http://localhost:1234`:
