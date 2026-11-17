@@ -81,6 +81,7 @@ class ModelInfo(BaseModel):
     object: str = "model"
     created: int = 0
     owned_by: str = "lm-studio"
+    instance_name: Optional[str] = Field(None, description="LM Studio instance hosting this model")
 
 
 class ModelsListResponse(BaseModel):
