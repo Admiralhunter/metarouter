@@ -13,11 +13,13 @@ services:
       - ./config:/app/config:ro  # Mount config as read-only
     environment:
       - PYTHONUNBUFFERED=1
-      # LM Studio connection URL (uncomment ONE of the following):
+      # Single LM Studio instance (env var override):
       # For Linux with network_mode=host (default works):
       # - LMSTUDIO_BASE_URL=http://localhost:1234
       # For macOS/Windows Docker Desktop:
       - LMSTUDIO_BASE_URL=http://host.docker.internal:1234
+      # For multiple instances, configure them in config/router.yaml under
+      # lm_studio.instances instead of using the env var.
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health', timeout=5)"]
       interval: 30s

@@ -1,10 +1,10 @@
 """Configuration settings for LM Router."""
 
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
 
 import yaml
-from pydantic import Field
+from pydantic import BaseModel, Field, NonNegativeInt, PositiveInt, StringConstraints, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,14 +15,60 @@ class ServerSettings(BaseSettings):
     port: int = 8000
 
 
+class LMStudioInstanceConfig(BaseModel):
+    """Configuration for a single LM Studio instance."""
+
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] = "default"
+    base_url: str = "http://localhost:1234"
+    timeout: PositiveInt = 300
+    refresh_interval: NonNegativeInt = 60
+
+
 class LMStudioSettings(BaseSettings):
-    """LM Studio API configuration."""
+    """LM Studio API configuration.
+
+    Supports both single-instance (backward compatible) and multi-instance configs.
+    Single instance: set base_url directly.
+    Multi-instance: provide a list of instances.
+    """
 
     model_config = SettingsConfigDict(env_prefix="LMSTUDIO_")
 
     base_url: str = "http://localhost:1234"
-    timeout: int = 300
-    refresh_interval: int = 60
+    timeout: PositiveInt = 300
+    refresh_interval: NonNegativeInt = 60
+    instances: list[LMStudioInstanceConfig] = Field(default_factory=list)
+    health_check_interval: PositiveInt = 30
+
+    @classmethod
+    def settings_customise_sources(
+        cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings
+    ):
+        return env_settings, init_settings, dotenv_settings, file_secret_settings
+
+    @field_validator("instances")
+    @classmethod
+    def require_unique_instance_names(cls, instances: list[LMStudioInstanceConfig]):
+        if len({instance.name for instance in instances}) != len(instances):
+            raise ValueError("LM Studio instance names must be unique")
+        return instances
+
+    def get_instances(self) -> list[LMStudioInstanceConfig]:
+        """Get resolved list of instances.
+
+        If explicit instances are configured, return those.
+        Otherwise, create a single instance from the base_url/timeout/refresh_interval.
+        """
+        if self.instances:
+            return self.instances
+        return [
+            LMStudioInstanceConfig(
+                name="default",
+                base_url=self.base_url,
+                timeout=self.timeout,
+                refresh_interval=self.refresh_interval,
+            )
+        ]
 
 
 class RouterSettings(BaseSettings):
@@ -78,7 +124,7 @@ class Settings(BaseSettings):
             raise FileNotFoundError(f"Config file not found: {config_path}")
 
         with open(config_path) as f:
-            config_data = yaml.safe_load(f)
+            config_data = yaml.safe_load(f) or {}
 
         return cls(
             server=ServerSettings(**config_data.get("server", {})),
@@ -100,8 +146,9 @@ def get_settings() -> Settings:
     """Get or create settings instance."""
     global _settings
     if _settings is None:
-        # Try to load from default config location
-        config_path = Path(__file__).parent.parent.parent.parent / "config" / "router.yaml"
+        config_path = Path("config/router.yaml")
+        if not config_path.is_file():
+            config_path = Path(__file__).resolve().parents[3] / config_path
         if config_path.exists():
             _settings = Settings.from_yaml(config_path)
         else:

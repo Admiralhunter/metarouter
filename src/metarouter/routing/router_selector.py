@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from ..cache.benchmarks import BenchmarkFetcher, BenchmarkScores, get_benchmark_fetcher
 from ..cache.performance import get_performance_cache
 from ..config.settings import get_settings
-from ..lmstudio.client import LMStudioClient
+from ..lmstudio.client import LMStudioClient, MultiInstanceClient
 from ..lmstudio.models import ModelInfo
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ class ModelSelection(BaseModel):
 class RouterModelSelector:
     """Model selector using the router model for intelligent routing."""
 
-    def __init__(self, client: LMStudioClient, router_model: str, prefer_loaded_bonus: int):
+    def __init__(self, client: LMStudioClient | MultiInstanceClient, router_model: str, prefer_loaded_bonus: int):
         self.client = client
         self.router_model = router_model
         self.prefer_loaded_bonus = prefer_loaded_bonus
@@ -142,6 +142,7 @@ ROUTING GUIDELINES:
 8. For simple conversational queries, prefer small fast models (0.5B-3B)
 9. For complex reasoning/math, prefer models with high 'math' benchmark or larger models (70B+)
 10. Use benchmark scores as quantitative evidence when available
+11. Models may be hosted on different machines (@instance_name). The router handles routing automatically - just select the best model regardless of instance
 
 IMPORTANT: The "selected_model" MUST be the EXACT string inside the ID="..." quotes from the model list above. Do not include any other text like quantization or parameters.
 

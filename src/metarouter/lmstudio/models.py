@@ -33,6 +33,9 @@ class ModelInfo(BaseModel):
     state: Optional[str] = None  # "loaded" or not present
     loaded_instances: list[LoadedInstance] = Field(default_factory=list)
 
+    # Multi-instance tracking: which LM Studio instance hosts this model
+    instance_name: Optional[str] = None
+
     @property
     def is_loaded(self) -> bool:
         """Check if model is currently loaded."""
@@ -67,6 +70,10 @@ class ModelInfo(BaseModel):
                 meta_parts.append("vision")
             if "tool_use" in self.capabilities:
                 meta_parts.append("tools")
+
+        # Show which instance hosts this model
+        if self.instance_name:
+            meta_parts.append(f"@{self.instance_name}")
 
         # Format: ID="exact-id" | metadata
         return f'ID="{self.id}" | {", ".join(meta_parts)}'
